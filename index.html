@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GESTÃO DE JETONS®™</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body class="h-screen w-screen bg-gray-100 overflow-x-hidden md:overflow-hidden">
+    <div id="root" class="h-full w-full"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function App() {
+            const [view, setView] = useState(() => sessionStorage.getItem('currentView') || 'lancamentos');
+            const [currentYear, setCurrentYear] = useState(new Date().getFullYear().toString());
+            const [data, setData] = useState(() => {
+                const saved = localStorage.getItem('jetonData');
+                return saved ? JSON.parse(saved) : {};
+            });
+            const [form, setForm] = useState({ ciclo: '', mesRecebimento: '', jetcontrol: '', contracheque: '', dgad: '', irpf: '' });
+            const [isMenuOpen, setIsMenuOpen] = useState(false);
+
+            const listaCiclos = [
+                { label: '26/01 a 25/02', rec: 'ABRIL' }, { label: '26/02 a 25/03', rec: 'MAIO' },
+                { label: '26/03 a 25/04', rec: 'JUNHO' }, { label: '26/04 a 25/05', rec: 'JULHO' },
+                { label: '26/05 a 25/06', rec: 'AGOSTO' }, { label: '26/06 a 25/07', rec: 'SETEMBRO' },
+                { label: '26/07 a 25/08', rec: 'OUTUBRO' }, { label: '26/08 a 25/09', rec: 'NOVEMBRO' },
+                { label: '26/09 a 25/10', rec: 'DEZEMBRO' }, { label: '26/10 a 25/11', rec: 'JANEIRO' },
+                { label: '26/11 a 25/12', rec: 'FEVEREIRO' }, { label: '26/12 a 25/01', rec: 'MARÇO' }
+            ];
+
+            useEffect(() => { 
+                localStorage.setItem('jetonData', JSON.stringify(data)); 
+                sessionStorage.setItem('currentView', view);
+            }, [data, view]);
+
+            const formatCurrency = (val) => {
+                const num = parseFloat(val);
+                if (isNaN(num)) return 'R$ 0,00';
+                return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(num);
+            };
+            
+            const calcLiq = (val, irpf) => {
+                const v = parseFloat(val) || 0;
+                if (v === 0) return 0;
+                return v * (1 - (parseFloat(irpf) || 0) / 100);
+            };
+            
+            const getDiff = (jc, cc) => (parseFloat(cc) || 0) - (parseFloat(jc) || 0);
+            
+            const getStatus = (jc, cc, irpf) => {
+                const valJC = parseFloat(jc) || 0;
+                const valCC = parseFloat(cc) || 0;
+                if (valJC === 0 && valCC === 0) return '🚫 SEM JETON';
+                const diff = getDiff(jc, cc);
+                return diff < 0 ? '📉 JETON EM DÉFICIT' : diff === 0 ? '✅ JETON CORRETO' : '📈 JETON EM SUPERÁVIT';
+            };
+
+            const handleCicloChange = (e) => {
+                const selected = listaCiclos.find(c => c.label === e.target.value);
+                setForm({...form, ciclo: e.target.value, mesRecebimento: selected ? selected.rec : ''});
+            };
+
+            const handleMoneyChange = (e, field) => {
+                let val = e.target.value.replace(/\D/g, "");
+                setForm({...form, [field]: (val / 100).toFixed(2)});
+            };
+
+            const handleSave = () => {
+                if (!form.ciclo || form.irpf === '') {
+                    alert("🚨 ATENÇÃO: PREENCHA TODOS OS CAMPOS!");
+                    return;
+                }
+
+                const yearData = data[currentYear] || [];
+                const existingIndex = yearData.findIndex(item => item.ciclo === form.ciclo);
+
+                let newData;
+                if (existingIndex !== -1) {
+                    newData = [...yearData];
+                    newData[existingIndex] = form;
+                } else {
+                    newData = [...yearData, form];
+                }
+
+                setData({...data, [currentYear]: newData});
+                setForm({ ciclo: '', mesRecebimento: '', jetcontrol: '', contracheque: '', dgad: '', irpf: '' });
+                
+                alert("🏆 PARABÉNS: DADOS SALVOS COM SUCESSO!");
+                setView('tabela');
+            };
+
+            const exportPDF = (year) => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF('l', 'mm', 'a4');
+                doc.setFontSize(16);
+                doc.text(`RELATÓRIO ANUAL ${year}`, 14, 15);
+                const yearData = data[year] || [];
+                const totals = yearData.reduce((acc, d) => ({
+                    jc: acc.jc + parseFloat(d.jetcontrol || 0),
+                    jcL: acc.jcL + calcLiq(d.jetcontrol, d.irpf),
+                    cc: acc.cc + parseFloat(d.contracheque || 0),
+                    ccL: acc.ccL + calcLiq(d.contracheque, d.irpf),
+                    dg: acc.dg + parseFloat(d.dgad || 0),
+                    diff: acc.diff + getDiff(d.jetcontrol, d.contracheque)
+                }), { jc: 0, jcL: 0, cc: 0, ccL: 0, dg: 0, diff: 0 });
+
+                const body = yearData.map(d => [
+                    d.ciclo, d.mesRecebimento, (d.irpf || 0) + '%', formatCurrency(d.jetcontrol), 
+                    formatCurrency(calcLiq(d.jetcontrol, d.irpf)), formatCurrency(d.contracheque), 
+                    formatCurrency(calcLiq(d.contracheque, d.irpf)), formatCurrency(d.dgad), 
+                    formatCurrency(getDiff(d.jetcontrol, d.contracheque)), getStatus(d.jetcontrol, d.contracheque, d.irpf)
+                ]);
+
+                body.push(['TOTAL', '', '', formatCurrency(totals.jc), formatCurrency(totals.jcL), formatCurrency(totals.cc), formatCurrency(totals.ccL), formatCurrency(totals.dg), formatCurrency(totals.diff), '']);
+
+                doc.autoTable({
+                    head: [['CICLO', 'MÊS DE RECEBIMENTO', 'ALÍQUOTA DE IRPF', 'JETCONTROL', 'JETCONTROL LÍQUIDO', 'CONTRACHEQUE', 'CONTRACHEQUE LÍQUIDO', 'JETON DGAD', 'DIFERENÇA', 'STATUS']],
+                    body: body,
+                    startY: 25,
+                    theme: 'grid',
+                    styles: { halign: 'center', valign: 'middle', fontSize: 8, lineColor: [0,0,0], lineWidth: 0.1, font: 'helvetica' },
+                    headStyles: { fillColor: [30, 64, 175], textColor: [255, 255, 255], fontStyle: 'bold', halign: 'center' },
+                    alternateRowStyles: {fillColor: [240, 240, 240]},
+                    didParseCell: function(data) {
+                        if (data.section === 'body' && data.row.index === body.length - 1) {
+                            data.cell.styles.fontStyle = 'bold';
+                            data.cell.styles.fillColor = [22, 101, 52];
+                            data.cell.styles.textColor = [255, 255, 255];
+                        }
+                    }
+                });
+                doc.save(`Relatorio_${year}.pdf`);
+            };
+
+            const exportAllYearsPDF = () => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF('l', 'mm', 'a4');
+                doc.setFontSize(16);
+                doc.text("RELATÓRIO CONSOLIDADO DE TODOS OS CICLOS", 14, 15);
+                
+                let startY = 25;
+                Object.keys(data).sort().forEach(year => {
+                    const yearData = data[year];
+                    if (!yearData || yearData.length === 0) return;
+                    
+                    doc.setFontSize(12);
+                    doc.text(`ANO: ${year}`, 14, startY);
+                    startY += 7;
+                    
+                    const totals = yearData.reduce((acc, d) => ({
+                        jc: acc.jc + parseFloat(d.jetcontrol || 0),
+                        jcL: acc.jcL + calcLiq(d.jetcontrol, d.irpf),
+                        cc: acc.cc + parseFloat(d.contracheque || 0),
+                        ccL: acc.ccL + calcLiq(d.contracheque, d.irpf),
+                        dg: acc.dg + parseFloat(d.dgad || 0),
+                        diff: acc.diff + getDiff(d.jetcontrol, d.contracheque)
+                    }), { jc: 0, jcL: 0, cc: 0, ccL: 0, dg: 0, diff: 0 });
+
+                    const body = yearData.map(d => [
+                        d.ciclo, d.mesRecebimento, (d.irpf || 0) + '%', formatCurrency(d.jetcontrol), 
+                        formatCurrency(calcLiq(d.jetcontrol, d.irpf)), formatCurrency(d.contracheque), 
+                        formatCurrency(calcLiq(d.contracheque, d.irpf)), formatCurrency(d.dgad), 
+                        formatCurrency(getDiff(d.jetcontrol, d.contracheque)), getStatus(d.jetcontrol, d.contracheque, d.irpf)
+                    ]);
+
+                    body.push(['TOTAL', '', '', formatCurrency(totals.jc), formatCurrency(totals.jcL), formatCurrency(totals.cc), formatCurrency(totals.ccL), formatCurrency(totals.dg), formatCurrency(totals.diff), '']);
+
+                    doc.autoTable({
+                        head: [['CICLO', 'MÊS DE RECEBIMENTO', 'ALÍQUOTA DE IRPF', 'JETCONTROL', 'JETCONTROL LÍQUIDO', 'CONTRACHEQUE', 'CONTRACHEQUE LÍQUIDO', 'JETON DGAD', 'DIFERENÇA', 'STATUS']],
+                        body: body,
+                        startY: startY,
+                        theme: 'grid',
+                        styles: { halign: 'center', fontSize: 7, lineColor: [0, 0, 0], lineWidth: 0.1 },
+                        headStyles: { fillColor: [30, 64, 175] },
+                        alternateRowStyles: {fillColor: [240, 240, 240]},
+                        didParseCell: function(data) {
+                            if (data.section === 'body' && data.row.index === body.length - 1) {
+                                data.cell.styles.fontStyle = 'bold';
+                                data.cell.styles.fillColor = [22, 101, 52];
+                                data.cell.styles.textColor = [255, 255, 255];
+                            }
+                        }
+                    });
+                    startY = doc.lastAutoTable.finalY + 10;
+                });
+                doc.save("RELATÓRIO COMPLETO.pdf");
+            };
+
+            const clearData = (year) => {
+                if (confirm(`🚨 ATENÇÃO: ISTO IRÁ LIMPAR TODOS OS DADOS DO ANO ${year}?`)) {
+                    setData({...data, [year]: []});
+                }
+            };
+
+            const renderTableContent = (year, showButtons = true) => {
+                const yearData = data[year] || [];
+                const totals = yearData.reduce((acc, d) => ({
+                    jc: acc.jc + parseFloat(d.jetcontrol || 0),
+                    jcL: acc.jcL + calcLiq(d.jetcontrol, d.irpf),
+                    cc: acc.cc + parseFloat(d.contracheque || 0),
+                    ccL: acc.ccL + calcLiq(d.contracheque, d.irpf),
+                    dg: acc.dg + parseFloat(d.dgad || 0),
+                    diff: acc.diff + getDiff(d.jetcontrol, d.contracheque)
+                }), { jc: 0, jcL: 0, cc: 0, ccL: 0, dg: 0, diff: 0 });
+
+                return (
+                    <div className="mb-8">
+                        <h2 className="font-bold text-lg mb-2">ANO: {year}</h2>
+                        <div className="w-full overflow-x-auto border-2 border-black mb-4">
+                            <table className="w-full min-w-[800px] border-collapse text-center text-xs">
+                                <thead className="bg-blue-800 text-white font-bold">
+                                    <tr>
+                                        <th className="border-r border-black p-2">CICLO</th><th className="border-r border-black p-2">MÊS DE RECEBIMENTO</th>
+                                        <th className="border-r border-black p-2">ALÍQUOTA DE IRPF</th><th className="border-r border-black p-2">JETCONTROL</th>
+                                        <th className="border-r border-black p-2">JETCONTROL LÍQUIDO</th><th className="border-r border-black p-2">JETON CONTRACHEQUE</th>
+                                        <th className="border-r border-black p-2">JETON CONTRACHEQUE LÍQUIDO</th><th className="border-r border-black p-2">JETON DGAD</th>
+                                        <th className="border-r border-black p-2 font-bold">DIFERENÇA</th><th className="p-2">STATUS</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {yearData.map((d, i) => (
+                                        <tr key={i} className={`${i % 2 === 0 ? 'bg-white' : 'bg-gray-200'} border-b border-black`}>
+                                            <td className="border-r border-black p-2">{d.ciclo}</td><td className="border-r border-black p-2">{d.mesRecebimento}</td>
+                                            <td className="border-r border-black p-2">{(d.irpf || 0)}%</td><td className="border-r border-black p-2">{formatCurrency(d.jetcontrol)}</td>
+                                            <td className="border-r border-black p-2">{formatCurrency(calcLiq(d.jetcontrol, d.irpf))}</td><td className="border-r border-black p-2">{formatCurrency(d.contracheque)}</td>
+                                            <td className="border-r border-black p-2">{formatCurrency(calcLiq(d.contracheque, d.irpf))}</td><td className="border-r border-black p-2">{formatCurrency(d.dgad)}</td>
+                                            <td className="border-r border-black p-2 font-bold">{formatCurrency(getDiff(d.jetcontrol, d.contracheque))}</td>
+                                            <td className="p-2">{getStatus(d.jetcontrol, d.contracheque, d.irpf)}</td>
+                                        </tr>
+                                    ))}
+                                    <tr className="bg-green-800 text-white font-bold">
+                                        <td className="border-r border-black p-2">TOTAL</td><td className="border-r border-black p-2"></td><td className="border-r border-black p-2"></td>
+                                        <td className="border-r border-black p-2">{formatCurrency(totals.jc)}</td><td className="border-r border-black p-2">{formatCurrency(totals.jcL)}</td>
+                                        <td className="border-r border-black p-2">{formatCurrency(totals.cc)}</td><td className="border-r border-black p-2">{formatCurrency(totals.ccL)}</td>
+                                        <td className="border-r border-black p-2">{formatCurrency(totals.dg)}</td>
+                                        <td className="border-r border-black p-2">{formatCurrency(totals.diff)}</td><td className="p-2"></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        {showButtons && (
+                            <div className="flex flex-wrap gap-2 mb-6">
+                                <button onClick={() => exportPDF(year)} className="bg-blue-800 text-white font-bold px-4 py-2 rounded text-sm flex-1 sm:flex-none">GERAR RELATÓRIO</button>
+                                <button onClick={() => clearData(year)} className="bg-red-600 text-white font-bold px-4 py-2 rounded text-sm flex-1 sm:flex-none">LIMPAR TABELA</button>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            const renderMetrics = () => {
+                const yearData = data[currentYear] || [];
+                if (yearData.length === 0) return <p></p>;
+                const jc = yearData.map(d => parseFloat(d.jetcontrol) || 0);
+                const irpf = yearData.map(d => parseFloat(d.irpf) || 0);
+                return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Tabela JETCONTROL */}
+                        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                            <table className="min-w-full text-left border-collapse">
+                                <thead>
+                                    <tr className="bg-blue-50 border-b border-gray-200">
+                                        <th colSpan="2" className="px-4 py-3 font-bold text-blue-900 uppercase text-sm tracking-wider">
+                                            JETCONTROL
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody className="text-sm">
+                                    <tr className="border-b border-gray-100 hover:bg-gray-50">
+                                        <td className="px-4 py-3 text-gray-600 font-medium">MÊS DE MAIOR VALOR</td>
+                                        <td className="px-4 py-3 text-green-800 font-bold text-right">
+                                            {formatCurrency(Math.max(...jc))} ({yearData[jc.indexOf(Math.max(...jc))].mesRecebimento})
+                                        </td>
+                                    </tr>
+                                    <tr className="border-b border-gray-100 hover:bg-gray-50">
+                                        <td className="px-4 py-3 text-gray-600 font-medium">MÊS DE MENOR VALOR</td>
+                                        <td className="px-4 py-3 text-red-600 font-bold text-right">
+                                            {formatCurrency(Math.min(...jc))} ({yearData[jc.indexOf(Math.min(...jc))].mesRecebimento})
+                                        </td>
+                                    </tr>
+                                    <tr className="hover:bg-gray-50 bg-gray-50/50">
+                                        <td className="px-4 py-3 text-gray-700 font-bold">VALOR MÉDIO ANUAL</td>
+                                        <td className="px-4 py-3 text-blue-800 font-bold text-right">
+                                            {formatCurrency(jc.reduce((a, b) => a + b, 0) / jc.length)}
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* Tabela ALÍQUOTA DE IRPF (%) */}
+                        <div className="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+                            <table className="min-w-full text-left border-collapse">
+                                <thead>
+                                    <tr className="bg-green-50 border-b border-gray-200">
+                                        <th colSpan="2" className="px-4 py-3 font-bold text-blue-800 uppercase text-sm tracking-wider">
+                                            ALÍQUOTA DE IRPF (%)
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody className="text-sm">
+                                    <tr className="border-b border-gray-100 hover:bg-gray-50">
+                                        <td className="px-4 py-3 text-gray-600 font-medium">MÊS DE MAIOR VALOR</td>
+                                        <td className="px-4 py-3 text-green-800 font-bold text-right">
+                                            {Math.max(...irpf)}%
+                                        </td>
+                                    </tr>
+                                    <tr className="border-b border-gray-100 hover:bg-gray-50">
+                                        <td className="px-4 py-3 text-gray-600 font-medium">MÊS DE MENOR VALOR</td>
+                                        <td className="px-4 py-3 text-red-600 font-bold text-right">
+                                            {Math.min(...irpf)}%
+                                        </td>
+                                    </tr>
+                                    <tr className="hover:bg-gray-50 bg-gray-50/50">
+                                        <td className="px-4 py-3 text-gray-700 font-bold">VALOR MÉDIO ANUAL</td>
+                                        <td className="px-4 py-3 text-blue-800 font-bold text-right">
+                                            {(irpf.reduce((a, b) => a + b, 0) / irpf.length).toFixed(0)}%
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="flex flex-col h-full w-full relative overflow-hidden">
+                    {/* Elemento do Banner Centralizado */}
+                    <div className="w-full bg-white border-b shadow-md flex justify-center items-center p-4 select-none flex-shrink-0 relative min-h-[90px] md:min-h-[120px]">
+                        {/* Botão Hambúrguer para Mobile */}
+                        <button 
+                            onClick={() => setIsMenuOpen(!isMenuOpen)} 
+                            className="absolute left-4 p-2 rounded-md bg-slate-800 text-white md:hidden hover:bg-slate-700 focus:outline-none z-50"
+                        >
+                            <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                {isMenuOpen ? (
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                                ) : (
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" />
+                                )}
+                            </svg>
+                        </button>
+                        
+                        {/* Imagem do Banner do Jeton (Responsiva e centralizada) */}
+                        <img 
+                            src="Banner JetControl.jpg" 
+                            alt="Banner Jetcontrol" 
+                            className="max-h-[200px] md:max-h-[200px] w-auto object-contain mx-auto"
+                            onError={(e) => { e.target.style.display = 'none'; }} 
+                        />
+                    </div>
+
+                    {/* Container Principal */}
+                    <div className="flex flex-row flex-1 w-full overflow-hidden relative">
+                        
+                        {/* Overlay para fechar o menu ao clicar fora no Mobile */}
+                        {isMenuOpen && (
+                            <div 
+                                className="fixed inset-0 bg-black/40 z-30 md:hidden" 
+                                onClick={() => setIsMenuOpen(false)}
+                            />
+                        )}
+
+                        {/* Navegação */}
+                        <nav className={`
+                            fixed inset-y-0 left-0 transform ${isMenuOpen ? "translate-x-0" : "-translate-x-full"} 
+                            transition-transform duration-300 ease-in-out z-40 w-64 bg-slate-800 text-white p-5 flex-shrink-0 overflow-y-auto
+                            md:relative md:translate-x-0 md:z-0
+                        `}>
+                            <h2 className="font-bold mb-4 mt-16 md:mt-0 text-sm tracking-wider text-slate-400">MENU DE OPÇÕES</h2>
+                            <ul className="flex flex-col gap-2 md:space-y-4 cursor-pointer text-xs sm:text-sm whitespace-normal">
+                                <li className={`p-2 rounded hover:bg-slate-700 transition-colors ${view === 'lancamentos' ? "text-blue-400 font-bold bg-slate-700" : ""}`} onClick={() => { setView('lancamentos'); setIsMenuOpen(false); }}>LANÇAMENTO DE CICLO</li>
+                                <li className={`p-2 rounded hover:bg-slate-700 transition-colors ${view === 'tabela' ? "text-blue-400 font-bold bg-slate-700" : ""}`} onClick={() => { setView('tabela'); setIsMenuOpen(false); }}>TABELA DE LANÇAMENTOS</li>
+                                <li className={`p-2 rounded hover:bg-slate-700 transition-colors ${view === 'dashboard' ? "text-blue-400 font-bold bg-slate-700" : ""}`} onClick={() => { setView('dashboard'); setIsMenuOpen(false); }}>ESTATÍSTICAS</li>
+                                <li className={`p-2 rounded hover:bg-slate-700 transition-colors ${view === 'ciclos' ? "text-blue-400 font-bold bg-slate-700" : ""}`} onClick={() => { setView('ciclos'); setIsMenuOpen(false); }}>CICLOS LANÇADOS</li>
+                            </ul>
+                        </nav>
+
+                        {/* Conteúdo */}
+                        <main className="flex-1 p-4 md:p-8 overflow-y-auto bg-gray-100 w-full">
+                            {view === 'lancamentos' && (
+                                <div className="bg-white p-4 md:p-6 rounded shadow max-w-lg mx-auto">
+                                    <h1 className="text-lg md:text-xl font-bold mb-4 text-center">LANÇAMENTO DE CICLO ({currentYear})</h1>
+                                    <div className="mb-3">
+                                        <select className="w-full border p-2 rounded text-sm" value={form.ciclo} onChange={handleCicloChange}>
+                                            <option value="">ESCOLHA O CICLO</option>
+                                            {listaCiclos.map(c => <option key={c.label} value={c.label}>{c.label}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="mb-3">
+                                        <label className="block text-xs font-semibold mb-1">MÊS DE RECEBIMENTO</label>
+                                        <input className="w-full border p-2 bg-gray-100 rounded text-sm" value={form.mesRecebimento} readOnly />
+                                    </div>
+                                    <div className="mb-3">
+                                        <label className="block text-xs font-semibold mb-1">JETCONTROL</label>
+                                        <input className="w-full border p-2 rounded text-sm" placeholder="0,00" value={formatCurrency(form.jetcontrol)} onChange={(e) => handleMoneyChange(e, 'jetcontrol')} />
+                                    </div>
+                                    <div className="mb-3">
+                                        <label className="block text-xs font-semibold mb-1">JETON CONTRACHEQUE</label>
+                                        <input className="w-full border p-2 rounded text-sm" placeholder="0,00" value={formatCurrency(form.contracheque)} onChange={(e) => handleMoneyChange(e, 'contracheque')} />
+                                    </div>
+                                    <div className="mb-3">
+                                        <label className="block text-xs font-semibold mb-1">JETON DGAD</label>
+                                        <input className="w-full border p-2 rounded text-sm" placeholder="0,00" value={formatCurrency(form.dgad)} onChange={(e) => handleMoneyChange(e, 'dgad')} />
+                                    </div>
+                                    <div className="mb-3">
+                                        <label className="block text-xs font-semibold mb-1">ALÍQUOTA DE IRPF (%)</label>
+                                        <input className="w-full border p-2 rounded text-sm" placeholder="" value={form.irpf} onChange={(e) => setForm({...form, irpf: e.target.value})} />
+                                    </div>
+                                    <button onClick={handleSave} className="bg-green-800 text-white w-full p-2.5 font-bold mt-2 rounded hover:bg-green-900 transition-colors text-sm">SALVAR LANÇAMENTO</button>
+                                </div>
+                            )}
+
+                            {view === 'tabela' && (
+                                <div className="bg-white p-4 md:p-6 rounded shadow">
+                                    <h1 className="text-lg md:text-xl font-bold mb-4">TABELA DE LANÇAMENTOS</h1>
+                                    {renderTableContent(currentYear, true)}
+                                </div>
+                            )}
+
+                            {view === 'dashboard' && (
+                                <div className="bg-white p-4 md:p-6 rounded shadow">
+                                    <h1 className="text-lg md:text-xl font-bold mb-4">ESTATÍSTICAS ({currentYear})</h1>
+                                    {renderMetrics()}
+                                </div>
+                            )}
+
+                            {view === 'ciclos' && (
+                                <div className="bg-white p-4 md:p-6 rounded shadow">
+                                    <h1 className="text-lg md:text-xl font-bold mb-4">CICLOS LANÇADOS</h1>
+                                    
+                                    {Object.keys(data).length > 0 && (
+                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8 p-4 bg-gray-50 rounded border">
+                                            {(() => {
+                                                const allYears = Object.keys(data).filter(y => data[y] && data[y].length > 0);
+                                                if(allYears.length === 0) return null;
+                                                const stats = allYears.map(year => {
+                                                    const sum = data[year].reduce((a, b) => a + parseFloat(b.jetcontrol || 0), 0);
+                                                    return { year, sum };
+                                                });
+                                                const max = stats.reduce((prev, curr) => (curr.sum > prev.sum ? curr : prev), stats[0]);
+                                                const min = stats.reduce((prev, curr) => (curr.sum < prev.sum ? curr : prev), stats[0]);
+                                                const avg = stats.reduce((a, b) => a + b.sum, 0) / stats.length;
+
+                                                return (
+                                                    <>
+                                                        <div className="text-center p-2 border-b sm:border-b-0 sm:border-r border-gray-200">
+                                                            <p className="text-xs font-bold text-gray-600">MAIOR VALOR ANUAL DE JETCONTROL</p>
+                                                            <p className="text-md font-bold text-green-800">{formatCurrency(max.sum)} ({max.year})</p>
+                                                        </div>
+                                                        <div className="text-center p-2 border-b sm:border-b-0 sm:border-r border-gray-200">
+                                                            <p className="text-xs font-bold text-gray-600">MENOR VALOR ANUAL DE JETCONTROL</p>
+                                                            <p className="text-md font-bold text-red-600">{formatCurrency(min.sum)} ({min.year})</p>
+                                                        </div>
+                                                        <div className="text-center p-2">
+                                                            <p className="text-xs font-bold text-gray-600">VALOR MÉDIO GERAL (TODOS OS ANOS)</p>
+                                                            <p className="text-md font-bold text-blue-800">{formatCurrency(avg)}</p>
+                                                        </div>
+                                                    </>
+                                                );
+                                            })()}
+                                        </div>
+                                    )}
+
+                                    <button onClick={exportAllYearsPDF} className="bg-blue-800 text-white font-bold px-6 py-3 rounded mb-8 w-full sm:w-auto hover:bg-purple-900 transition-colors text-sm">GERAR RELATÓRIO GERAL</button>
+                                    {Object.keys(data).sort((a,b) => b-a).map(year => (
+                                        data[year] && data[year].length > 0 && renderTableContent(year, false)
+                                    ))}
+                                </div>
+                            )}
+                        </main>
+                    </div>
+                </div>
+            );
+        }
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
